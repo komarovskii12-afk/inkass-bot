@@ -1,0 +1,35 @@
+# Инфраструктура для Render. Импортируй репозиторий как Blueprint,
+# Render создаст веб-сервис и базу PostgreSQL автоматически.
+services:
+  - type: web
+    name: inkass-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: WORKER_IDS
+        sync: false
+      - key: TIMEZONE
+        value: Europe/Moscow
+      - key: DEFAULT_POINTS
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: BASE_WEBHOOK_URL
+        fromService:
+          type: web
+          name: inkass-bot
+          property: host
+      - key: DATABASE_URL
+        fromDatabase:
+          name: inkass-db
+          property: connectionString
+
+databases:
+  - name: inkass-db
+    plan: free
