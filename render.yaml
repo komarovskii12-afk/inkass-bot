@@ -8,6 +8,10 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
+      # Важно: на Python 3.14 нет готовых сборок pydantic-core для aiogram 3.13,
+      # pip пытается компилировать из исходников и падает. Закрепляем 3.12.
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_IDS
