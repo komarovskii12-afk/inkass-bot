@@ -23,8 +23,13 @@ TZ = ZoneInfo(TIMEZONE)
 # --- Webhook (Render) ---
 # Если BASE_WEBHOOK_URL задан — бот работает через webhook (нужно для Render).
 # Если пусто — включается polling (удобно для локального запуска).
-BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL", "").strip().rstrip("/")
-# Render в property: host отдаёт только домен без схемы — добавим https://
+# Render сам публикует внешний адрес сервиса в RENDER_EXTERNAL_URL.
+# Его и берём в первую очередь: fromService "host" в render.yaml отдаёт
+# внутренний хост приватной сети, который Telegram снаружи не резолвит.
+BASE_WEBHOOK_URL = (
+    os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BASE_WEBHOOK_URL", "")
+).strip().rstrip("/")
+# Если адрес пришёл без схемы — добавим https://
 if BASE_WEBHOOK_URL and not BASE_WEBHOOK_URL.startswith(("http://", "https://")):
     BASE_WEBHOOK_URL = "https://" + BASE_WEBHOOK_URL
 WEBHOOK_PATH = "/webhook"
