@@ -1,5 +1,6 @@
 """Настройки бота. Все секреты берутся из переменных окружения (Render)."""
 import os
+import re
 from zoneinfo import ZoneInfo
 
 
@@ -27,7 +28,11 @@ BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL", "").strip().rstrip("/")
 if BASE_WEBHOOK_URL and not BASE_WEBHOOK_URL.startswith(("http://", "https://")):
     BASE_WEBHOOK_URL = "https://" + BASE_WEBHOOK_URL
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me")
+
+# Telegram разрешает в secret_token только A-Z, a-z, 0-9, "_" и "-".
+# Render генерирует значение со спецсимволами, поэтому чистим его.
+_raw_secret = os.getenv("WEBHOOK_SECRET", "change-me")
+WEBHOOK_SECRET = re.sub(r"[^A-Za-z0-9_-]", "", _raw_secret)[:256] or "inkass-webhook-secret"
 PORT = int(os.getenv("PORT", "10000"))
 
 # --- База данных ---
