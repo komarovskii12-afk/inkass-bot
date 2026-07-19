@@ -1,5 +1,6 @@
 """Модели данных и подключение к БД (PostgreSQL на Render, SQLite локально)."""
 import datetime as dt
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, func, select,
@@ -10,16 +11,48 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from config import DATABASE_URL, DEFAULT_POINTS
 
 
+# Параметры строки подключения в стиле libpq, которые asyncpg не понимает
+# и на которых падает (Neon отдаёт их в своей строке по умолчанию).
+_LIBPQ_ONLY = {"sslmode", "channel_binding", "options", "target_session_attrs"}
+
+
 def _normalize(url: str) -> str:
-    """Render выдаёт postgres://..., а asyncpg ждёт postgresql+asyncpg://..."""
+    """Приводим строку к виду, который понимает asyncpg.
+
+    Render отдаёт postgres://..., Neon — postgresql://...?sslmode=require.
+    Драйверу нужен префикс postgresql+asyncpg:// и никаких libpq-параметров.
+    """
     if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    parts = urlsplit(url)
+    if parts.query:
+        kept = [(k, v) for k, v in parse_qsl(parts.query) if k not in _LIBPQ_ONLY]
+        url = urlunsplit(parts._replace(query=urlencode(kept)))
     return url
 
 
-engine = create_async_engine(_normalize(DATABASE_URL), pool_pre_ping=True)
+def _sslmode(url: str) -> str | None:
+    """Достаём sslmode из исходной строки до того, как его вырежут."""
+    query = urlsplit(url).query
+    return dict(parse_qsl(query)).get("sslmode") if query else None
+
+
+def _connect_args(original_url: str, normalized_url: str) -> dict:
+    """Внешним Postgres (Neon и т.п.) нужен SSL — asyncpg включает его явно."""
+    if not normalized_url.startswith("postgresql+asyncpg://"):
+        return {}
+    if _sslmode(original_url) == "disable":
+        return {}
+    return {"ssl": True}
+
+
+_DB_URL = _normalize(DATABASE_URL)
+engine = create_async_engine(
+    _DB_URL, pool_pre_ping=True, connect_args=_connect_args(DATABASE_URL, _DB_URL)
+)
 Session = async_sessionmaker(engine, expire_on_commit=False)
 
 
