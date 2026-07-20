@@ -15,9 +15,10 @@ from sqlalchemy import select
 from config import CURRENCIES, TZ, is_admin, is_allowed
 from db import Cashier, Point, Receipt, Session
 from keyboards import (
-    BTN_CANCEL, BTN_POINTS, BTN_RECV, BTN_REPORT,
-    cancel_menu, cashiers_admin_kb, cashiers_kb, currency_kb, date_kb, denom_kb,
-    main_menu, more_kb, points_admin_kb, points_kb, points_pick_kb, points_toggle_kb,
+    BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RECV, BTN_REPORT,
+    cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb, currency_kb,
+    date_kb, denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
+    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb,
 )
 
 router = Router()
@@ -67,6 +68,12 @@ class Rep(StatesGroup):
 class Pts(StatesGroup):
     add = State()
     add_cashier = State()
+
+
+class Edit(StatesGroup):
+    total = State()
+    normal = State()
+    work = State()
 
 
 # ---------- Утилиты ----------
@@ -451,7 +458,9 @@ async def report_date_text(message: Message, state: FSMContext):
 async def _send_report(message: Message, state: FSMContext, d: dt.date, uid: int):
     async with Session() as s:
         res = await s.execute(
-            select(Receipt).where(Receipt.report_date == d).order_by(Receipt.point_name)
+            select(Receipt)
+            .where(Receipt.report_date == d, Receipt.deleted_at.is_(None))
+            .order_by(Receipt.point_name)
         )
         rows = res.scalars().all()
 
@@ -462,11 +471,208 @@ async def _send_report(message: Message, state: FSMContext, d: dt.date, uid: int
     await message.answer(_format_report(d, rows), reply_markup=main_menu(uid))
 
 
+# ---------- Исправление записей (только за сегодняшнюю дату) ----------
+async def _editable(session, uid: int):
+    """Строки за сегодня, доступные пользователю: свои, а владельцу — все."""
+    q = select(Receipt).where(
+        Receipt.report_date == today(),
+        Receipt.deleted_at.is_(None),
+    )
+    if not is_admin(uid):
+        q = q.where(Receipt.worker_id == uid)
+    res = await session.execute(q.order_by(Receipt.id.desc()).limit(30))
+    return res.scalars().all()
+
+
+def _receipt_card(r: Receipt) -> str:
+    mark = " ✏️ (уже правилась)" if r.edited_at else ""
+    return (
+        f"🏢 {html.escape(r.point_name)}\n"
+        f"👤 {html.escape(r.cashier_name or NO_CASHIER)}\n"
+        f"💵 {r.currency} {r.denomination}\n\n"
+        f"Принято: <b>{r.qty_total}</b>\n"
+        f"Годных: <b>{r.qty_normal}</b>\n"
+        f"В работу: <b>{r.qty_work}</b>\n"
+        f"Внёс: {html.escape(r.worker_name)}{mark}"
+    )
+
+
+@router.message(F.text == BTN_EDIT)
+async def edit_start(message: Message, state: FSMContext):
+    await state.clear()
+    async with Session() as s:
+        rows = await _editable(s, message.from_user.id)
+    if not rows:
+        await message.answer(
+            "За сегодня нет записей, которые можно исправить.\n"
+            "Править можно только приёмки с сегодняшней датой.",
+            reply_markup=main_menu(message.from_user.id),
+        )
+        return
+    await message.answer(
+        f"Записи за {fmt_date(today())}. Выберите строку:\n"
+        "<i>формат: касса · кассир · номинал: принято/годных/в работу</i>",
+        reply_markup=edit_list_kb(rows),
+    )
+
+
+@router.callback_query(F.data == "edback")
+async def edit_back(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    async with Session() as s:
+        rows = await _editable(s, cb.from_user.id)
+    await cb.answer()
+    if not rows:
+        await cb.message.answer("Записей больше нет.", reply_markup=main_menu(cb.from_user.id))
+        return
+    await cb.message.answer("Выберите строку:", reply_markup=edit_list_kb(rows))
+
+
+async def _get_editable(session, rid: int, uid: int) -> Receipt | None:
+    """Строку можно трогать: она сегодняшняя, не удалена и принадлежит юзеру."""
+    r = await session.get(Receipt, rid)
+    if r is None or r.deleted_at is not None:
+        return None
+    if r.report_date != today():
+        return None
+    if not is_admin(uid) and r.worker_id != uid:
+        return None
+    return r
+
+
+@router.callback_query(F.data.startswith("ed:"))
+async def edit_pick(cb: CallbackQuery, state: FSMContext):
+    rid = int(cb.data.split(":", 1)[1])
+    async with Session() as s:
+        r = await _get_editable(s, rid, cb.from_user.id)
+    if r is None:
+        await cb.answer("Эту запись править нельзя", show_alert=True)
+        return
+    await cb.answer()
+    await cb.message.answer(_receipt_card(r), reply_markup=edit_actions_kb(rid))
+
+
+@router.callback_query(F.data.startswith("edn:"))
+async def edit_numbers_start(cb: CallbackQuery, state: FSMContext):
+    rid = int(cb.data.split(":", 1)[1])
+    async with Session() as s:
+        r = await _get_editable(s, rid, cb.from_user.id)
+    if r is None:
+        await cb.answer("Эту запись править нельзя", show_alert=True)
+        return
+    await state.update_data(edit_id=rid)
+    await state.set_state(Edit.total)
+    await cb.answer()
+    await cb.message.answer(
+        f"Было принято: {r.qty_total}\nВведите новое количество <b>принято всего</b>:",
+        reply_markup=cancel_menu(),
+    )
+
+
+@router.message(Edit.total)
+async def edit_total(message: Message, state: FSMContext):
+    n = parse_int(message.text)
+    if n is None or n <= 0:
+        await message.answer("Нужно положительное число.")
+        return
+    await state.update_data(new_total=n)
+    await state.set_state(Edit.normal)
+    await message.answer("Сколько из них <b>годных</b>?")
+
+
+@router.message(Edit.normal)
+async def edit_normal(message: Message, state: FSMContext):
+    n = parse_int(message.text)
+    data = await state.get_data()
+    if n is None:
+        await message.answer("Нужно число (можно 0).")
+        return
+    if n > data["new_total"]:
+        await message.answer(f"Не больше принятых ({data['new_total']}).")
+        return
+    await state.update_data(new_normal=n)
+    await state.set_state(Edit.work)
+    await message.answer("Сколько <b>взято в работу</b>?")
+
+
+@router.message(Edit.work)
+async def edit_work(message: Message, state: FSMContext):
+    n = parse_int(message.text)
+    data = await state.get_data()
+    if n is None:
+        await message.answer("Нужно число (можно 0).")
+        return
+    if n > data["new_total"]:
+        await message.answer(f"Не больше принятых ({data['new_total']}).")
+        return
+
+    async with Session() as s:
+        r = await _get_editable(s, data["edit_id"], message.from_user.id)
+        if r is None:
+            await state.clear()
+            await message.answer(
+                "Запись больше недоступна для правки.",
+                reply_markup=main_menu(message.from_user.id),
+            )
+            return
+        was = (r.qty_total, r.qty_normal, r.qty_work)
+        r.qty_total = data["new_total"]
+        r.qty_normal = data["new_normal"]
+        r.qty_work = n
+        r.edited_at = dt.datetime.now(dt.timezone.utc)
+        r.changed_by = message.from_user.full_name
+        await s.commit()
+        card = _receipt_card(r)
+
+    await state.clear()
+    await message.answer(
+        f"✅ Исправлено.\nБыло: {was[0]}/{was[1]}/{was[2]} → "
+        f"стало: {data['new_total']}/{data['new_normal']}/{n}\n\n{card}",
+        reply_markup=main_menu(message.from_user.id),
+    )
+
+
+@router.callback_query(F.data.startswith("eddy:"))
+async def edit_delete_confirmed(cb: CallbackQuery, state: FSMContext):
+    rid = int(cb.data.split(":", 1)[1])
+    async with Session() as s:
+        r = await _get_editable(s, rid, cb.from_user.id)
+        if r is None:
+            await cb.answer("Эту запись удалить нельзя", show_alert=True)
+            return
+        r.deleted_at = dt.datetime.now(dt.timezone.utc)
+        r.changed_by = cb.from_user.full_name
+        await s.commit()
+        label = f"{r.point_name} · {r.cashier_name} · {r.currency} {r.denomination}"
+    await state.clear()
+    await cb.answer("Удалено")
+    await cb.message.answer(
+        f"🗑 Строка удалена из отчётов:\n{html.escape(label)}\n\n"
+        "<i>Запись сохранена в базе со следом об удалении.</i>",
+        reply_markup=main_menu(cb.from_user.id),
+    )
+
+
+@router.callback_query(F.data.startswith("edd:"))
+async def edit_delete_ask(cb: CallbackQuery):
+    rid = int(cb.data.split(":", 1)[1])
+    async with Session() as s:
+        r = await _get_editable(s, rid, cb.from_user.id)
+    if r is None:
+        await cb.answer("Эту запись удалить нельзя", show_alert=True)
+        return
+    await cb.answer()
+    await cb.message.answer(
+        f"Удалить эту строку?\n\n{_receipt_card(r)}",
+        reply_markup=confirm_delete_kb(rid),
+    )
+
+
 def _format_report(d: dt.date, rows: list[Receipt]) -> str:
     # by_point[точка][кассир][(валюта, номинал)] = агрегаты
     tree: dict[str, dict[str, dict[tuple, dict]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(
-            lambda: {"total": 0, "normal": 0, "work": 0}
+            lambda: {"total": 0, "normal": 0, "work": 0, "edited": False}
         ))
     )
     for r in rows:
@@ -474,6 +680,8 @@ def _format_report(d: dt.date, rows: list[Receipt]) -> str:
         cell["total"] += r.qty_total
         cell["normal"] += r.qty_normal
         cell["work"] += r.qty_work
+        if r.edited_at:
+            cell["edited"] = True
 
     out = [f"📊 <b>Отчёт за {fmt_date(d)}</b>"]
     g_t = g_n = g_w = 0                # суммы в $
@@ -490,6 +698,7 @@ def _format_report(d: dt.date, rows: list[Receipt]) -> str:
                 out.append(
                     f"     {cur} {denom} — принято {c['total']}, "
                     f"годных {c['normal']}, в работу {c['work']}"
+                    + (" ✏️" if c["edited"] else "")
                 )
                 p_t += c["total"] * denom
                 p_n += c["normal"] * denom

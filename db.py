@@ -120,6 +120,17 @@ class Receipt(Base):
     qty_normal: Mapped[int] = mapped_column(Integer)
     qty_work: Mapped[int] = mapped_column(Integer)
 
+    # След правок. Удаление «мягкое»: строка уходит из отчётов, но остаётся
+    # в базе — для инструмента контроля наличных важно, чтобы ничего не
+    # исчезало бесследно.
+    edited_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    changed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
 
 # Колонки, добавленные после первого релиза. create_all() умеет создавать
 # новые таблицы, но не дописывает колонки в уже существующие — делаем сами.
@@ -127,6 +138,9 @@ _ADDED_COLUMNS = {
     "receipts": [
         ("cashier_id", "INTEGER"),
         ("cashier_name", "VARCHAR(120)"),
+        ("edited_at", "TIMESTAMP WITH TIME ZONE"),
+        ("deleted_at", "TIMESTAMP WITH TIME ZONE"),
+        ("changed_by", "VARCHAR(120)"),
     ],
 }
 

@@ -7,13 +7,18 @@ from aiogram.types import (
 from config import is_admin
 
 BTN_RECV = "📥 Принять инкассацию"
+BTN_EDIT = "✏️ Исправить"
 BTN_REPORT = "📊 Отчёт"
 BTN_POINTS = "🏢 Пункты"
 BTN_CANCEL = "❌ Отмена"
 
 
 def main_menu(uid: int) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(text=BTN_RECV)], [KeyboardButton(text=BTN_REPORT)]]
+    rows = [
+        [KeyboardButton(text=BTN_RECV)],
+        [KeyboardButton(text=BTN_EDIT)],
+        [KeyboardButton(text=BTN_REPORT)],
+    ]
     if is_admin(uid):
         rows.append([KeyboardButton(text=BTN_POINTS)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -63,6 +68,43 @@ def more_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="➕ Ещё номинал", callback_data="more:add")],
         [InlineKeyboardButton(text="👤 Другой кассир", callback_data="more:cashier")],
         [InlineKeyboardButton(text="✅ Завершить приёмку", callback_data="more:done")],
+    ])
+
+
+# ---------- Исправление записей ----------
+def _short_point(name: str) -> str:
+    """«265 — Торгова площа 4/27» -> «265»."""
+    return name.split("—")[0].strip() or name
+
+
+def _short_cashier(name: str) -> str:
+    """«Зінченко Ніна» -> «Зінченко»."""
+    return (name or "").split()[0] if name and name.strip() else "—"
+
+
+def edit_list_kb(receipts) -> InlineKeyboardMarkup:
+    rows = []
+    for r in receipts:
+        label = (
+            f"{_short_point(r.point_name)} · {_short_cashier(r.cashier_name)} · "
+            f"{r.denomination}: {r.qty_total}/{r.qty_normal}/{r.qty_work}"
+        )
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"ed:{r.id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def edit_actions_kb(receipt_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить числа", callback_data=f"edn:{receipt_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить строку", callback_data=f"edd:{receipt_id}")],
+        [InlineKeyboardButton(text="⬅️ К списку", callback_data="edback")],
+    ])
+
+
+def confirm_delete_kb(receipt_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Да, удалить", callback_data=f"eddy:{receipt_id}")],
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="edback")],
     ])
 
 
