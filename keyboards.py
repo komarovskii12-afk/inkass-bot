@@ -105,6 +105,7 @@ def denom_kb(denoms) -> InlineKeyboardMarkup:
 
 def more_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Исправить", callback_data="more:fix")],
         [InlineKeyboardButton(text="➕ Ещё номинал", callback_data="more:add")],
         [InlineKeyboardButton(text="👤 Другой кассир", callback_data="more:cashier")],
         [InlineKeyboardButton(text="✅ Завершить приёмку", callback_data="more:done")],

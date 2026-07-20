@@ -301,7 +301,7 @@ async def recv_total(message: Message, state: FSMContext):
         return
     await state.update_data(total=n)
     await state.set_state(Recv.normal)
-    await message.answer("Сколько из них <b>в нормальном (годном)</b> состоянии?")
+    await message.answer("Сколько из них <b>в нормальном</b> состоянии?")
 
 
 @router.message(Recv.normal)
@@ -351,7 +351,34 @@ async def recv_work(message: Message, state: FSMContext):
     )
 
 
-# ---------- Приёмка: ещё / другой кассир / завершить ----------
+# ---------- Приёмка: исправить / ещё / другой кассир / завершить ----------
+@router.callback_query(Recv.more, F.data == "more:fix")
+async def recv_more_fix(cb: CallbackQuery, state: FSMContext):
+    """Забрать последнюю записанную строку и переввести её цифры."""
+    data = await state.get_data()
+    lines = data.get("lines", [])
+    if not lines:
+        await cb.answer("Нечего исправлять", show_alert=True)
+        return
+    last = lines.pop()
+    await state.update_data(
+        lines=lines,
+        cashier_id=last.get("cashier_id"),
+        cashier_name=last.get("cashier_name", NO_CASHIER),
+        currency=last["currency"],
+        denom=last["denom"],
+    )
+    await state.set_state(Recv.total)
+    await cb.answer()
+    await cb.message.answer(
+        f"Исправляем: {html.escape(last.get('cashier_name', NO_CASHIER))} · "
+        f"{last['currency']} {last['denom']}\n"
+        f"Было: принято {last['total']}, в норме {last['normal']}, "
+        f"в работу {last['work']}.\n\n"
+        "Сколько купюр <b>принято всего</b>? (число)"
+    )
+
+
 @router.callback_query(Recv.more, F.data == "more:add")
 async def recv_more_add(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
