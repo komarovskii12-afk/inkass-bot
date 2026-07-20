@@ -1,5 +1,6 @@
 """Модели данных и подключение к БД (внешний PostgreSQL / SQLite локально)."""
 import datetime as dt
+import ssl as ssl_lib
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import (
@@ -41,12 +42,25 @@ def _sslmode(url: str) -> str | None:
 
 
 def _connect_args(original_url: str, normalized_url: str) -> dict:
-    """Внешним Postgres (Neon и т.п.) нужен SSL — asyncpg включает его явно."""
+    """SSL для Postgres, повторяя семантику libpq-параметра sslmode.
+
+    Важно: sslmode=require (его отдаёт Neon) означает «шифровать, но сертификат
+    не проверять». Строгая проверка ломает подключение к базам с самоподписанным
+    сертификатом — например, к внутренней базе Render. Проверяем цепочку только
+    при явных verify-ca / verify-full.
+    """
     if not normalized_url.startswith("postgresql+asyncpg://"):
         return {}
-    if _sslmode(original_url) == "disable":
+
+    mode = _sslmode(original_url)
+    if mode == "disable":
         return {}
-    return {"ssl": True}
+
+    ctx = ssl_lib.create_default_context()
+    if mode not in ("verify-ca", "verify-full"):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl_lib.CERT_NONE
+    return {"ssl": ctx}
 
 
 _DB_URL = _normalize(DATABASE_URL)
