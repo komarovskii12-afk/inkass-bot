@@ -11,6 +11,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from config import DATABASE_URL, DEFAULT_POINTS
 from seed_data import POINTS as SEED_POINTS
+from seed_data import RENAMES as SEED_RENAMES
 
 # Параметры строки подключения в стиле libpq, которые asyncpg не понимает
 # и на которых падает (Neon отдаёт их в своей строке по умолчанию).
@@ -177,6 +178,22 @@ async def seed_points(session) -> None:
         p.name: p for p in (await session.execute(select(Point))).scalars().all()
     }
     changed = False
+
+    # Переименования: правим и кассу, и историю приёмок, иначе отчёты
+    # расщепят старое и новое название на две разные кассы.
+    for old_name, new_name in SEED_RENAMES.items():
+        point = existing_points.get(old_name)
+        if point is None or new_name in existing_points:
+            continue
+        point.name = new_name
+        existing_points.pop(old_name)
+        existing_points[new_name] = point
+        await session.execute(
+            Receipt.__table__.update()
+            .where(Receipt.point_name == old_name)
+            .values(point_name=new_name)
+        )
+        changed = True
 
     for item in SEED_POINTS:
         point = existing_points.get(item["name"])
