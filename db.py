@@ -119,6 +119,7 @@ class Receipt(Base):
     denomination: Mapped[int] = mapped_column(Integer)
     qty_total: Mapped[int] = mapped_column(Integer)
     qty_normal: Mapped[int] = mapped_column(Integer)
+    qty_bad: Mapped[int | None] = mapped_column(Integer, nullable=True)  # не подлежат восстановлению
     qty_work: Mapped[int] = mapped_column(Integer)
 
     # След правок. Удаление «мягкое»: строка уходит из отчётов, но остаётся
@@ -142,6 +143,7 @@ _ADDED_COLUMNS = {
         ("edited_at", "TIMESTAMP WITH TIME ZONE"),
         ("deleted_at", "TIMESTAMP WITH TIME ZONE"),
         ("changed_by", "VARCHAR(120)"),
+        ("qty_bad", "INTEGER"),
     ],
 }
 

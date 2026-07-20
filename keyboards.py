@@ -128,7 +128,8 @@ def edit_list_kb(receipts) -> InlineKeyboardMarkup:
     for r in receipts:
         label = (
             f"{_short_point(r.point_name)} · {_short_cashier(r.cashier_name)} · "
-            f"{r.denomination}: {r.qty_total}/{r.qty_normal}/{r.qty_work}"
+            f"{r.denomination}: {r.qty_total}/{r.qty_normal}/"
+            f"{r.qty_bad or 0}/{r.qty_work}"
         )
         rows.append([InlineKeyboardButton(text=label, callback_data=f"ed:{r.id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -58,6 +58,7 @@ class Recv(StatesGroup):
     denom = State()
     total = State()
     normal = State()
+    bad = State()
     work = State()
     more = State()
 
@@ -74,6 +75,7 @@ class Pts(StatesGroup):
 class Edit(StatesGroup):
     total = State()
     normal = State()
+    bad = State()
     work = State()
 
 
@@ -315,6 +317,24 @@ async def recv_normal(message: Message, state: FSMContext):
         await message.answer(f"Не больше принятых ({data['total']}). Введите ещё раз.")
         return
     await state.update_data(normal=n)
+    await state.set_state(Recv.bad)
+    await message.answer("Сколько <b>неликвидных</b> (не подлежат восстановлению)?")
+
+
+@router.message(Recv.bad)
+async def recv_bad(message: Message, state: FSMContext):
+    n = parse_int(message.text)
+    data = await state.get_data()
+    if n is None:
+        await message.answer("Нужно число (можно 0).")
+        return
+    if data["normal"] + n > data["total"]:
+        await message.answer(
+            f"Нормальных ({data['normal']}) + неликвидных ({n}) "
+            f"больше, чем принято ({data['total']}). Введите ещё раз."
+        )
+        return
+    await state.update_data(bad=n)
     await state.set_state(Recv.work)
     await message.answer("Сколько купюр <b>взято в работу</b>?")
 
@@ -337,6 +357,7 @@ async def recv_work(message: Message, state: FSMContext):
         "denom": data["denom"],
         "total": data["total"],
         "normal": data["normal"],
+        "bad": data.get("bad", 0),
         "work": n,
     }
     lines = data.get("lines", [])
@@ -346,7 +367,8 @@ async def recv_work(message: Message, state: FSMContext):
 
     await message.answer(
         f"Записал: {line['cashier_name']} · {line['currency']} {line['denom']} — "
-        f"принято {line['total']}, годных {line['normal']}, в работу {line['work']}.",
+        f"принято {line['total']}, нормальных {line['normal']}, "
+        f"неликвидных {line['bad']}, в работу {line['work']}.",
         reply_markup=more_kb(),
     )
 
@@ -373,8 +395,8 @@ async def recv_more_fix(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer(
         f"Исправляем: {html.escape(last.get('cashier_name', NO_CASHIER))} · "
         f"{last['currency']} {last['denom']}\n"
-        f"Было: принято {last['total']}, в норме {last['normal']}, "
-        f"в работу {last['work']}.\n\n"
+        f"Было: принято {last['total']}, нормальных {last['normal']}, "
+        f"неликвидных {last.get('bad', 0)}, в работу {last['work']}.\n\n"
         "Сколько купюр <b>принято всего</b>? (число)"
     )
 
@@ -416,6 +438,7 @@ async def recv_more_done(cb: CallbackQuery, state: FSMContext):
                 denomination=ln["denom"],
                 qty_total=ln["total"],
                 qty_normal=ln["normal"],
+                qty_bad=ln.get("bad", 0),
                 qty_work=ln["work"],
             ))
         await s.commit()
@@ -428,7 +451,7 @@ async def recv_more_done(cb: CallbackQuery, state: FSMContext):
 
 def _receipt_summary(point_name: str, d: dt.date, lines: list[dict]) -> str:
     out = [f"✅ <b>Приёмка сохранена</b>\n🏢 {html.escape(point_name)} · {fmt_date(d)}\n"]
-    t_amount = n_amount = w_amount = 0
+    t_amount = n_amount = b_amount = w_amount = 0
     by_cashier: dict[str, list[dict]] = defaultdict(list)
     for ln in lines:
         by_cashier[ln.get("cashier_name", NO_CASHIER)].append(ln)
@@ -438,14 +461,17 @@ def _receipt_summary(point_name: str, d: dt.date, lines: list[dict]) -> str:
         for ln in by_cashier[cashier]:
             out.append(
                 f"   {ln['currency']} {ln['denom']} — принято {ln['total']}, "
-                f"годных {ln['normal']}, в работу {ln['work']}"
+                f"нормальных {ln['normal']}, неликвидных {ln.get('bad', 0)}, "
+                f"в работу {ln['work']}"
             )
             t_amount += ln["total"] * ln["denom"]
             n_amount += ln["normal"] * ln["denom"]
+            b_amount += ln.get("bad", 0) * ln["denom"]
             w_amount += ln["work"] * ln["denom"]
 
     out.append(
-        f"\nΣ принято: ${t_amount:,} · годных: ${n_amount:,} · в работу: ${w_amount:,}"
+        f"\nΣ принято: ${t_amount:,} · нормальных: ${n_amount:,} · "
+        f"неликвидных: ${b_amount:,} · в работу: ${w_amount:,}"
     )
     return "\n".join(out)
 
@@ -541,7 +567,8 @@ def _receipt_card(r: Receipt) -> str:
         f"👤 {html.escape(r.cashier_name or NO_CASHIER)}\n"
         f"💵 {r.currency} {r.denomination}\n\n"
         f"Принято: <b>{r.qty_total}</b>\n"
-        f"Годных: <b>{r.qty_normal}</b>\n"
+        f"Нормальных: <b>{r.qty_normal}</b>\n"
+        f"Неликвидных: <b>{r.qty_bad or 0}</b>\n"
         f"В работу: <b>{r.qty_work}</b>\n"
         f"Внёс: {html.escape(r.worker_name)}{mark}"
     )
@@ -561,7 +588,7 @@ async def edit_start(message: Message, state: FSMContext):
         return
     await message.answer(
         f"Записи за {fmt_date(today())}. Выберите строку:\n"
-        "<i>формат: касса · кассир · номинал: принято/годных/в работу</i>",
+        "<i>формат: касса · кассир · номинал: принято/нормальных/неликвидных/в работу</i>",
         reply_markup=edit_list_kb(rows),
     )
 
@@ -627,7 +654,7 @@ async def edit_total(message: Message, state: FSMContext):
         return
     await state.update_data(new_total=n)
     await state.set_state(Edit.normal)
-    await message.answer("Сколько из них <b>годных</b>?")
+    await message.answer("Сколько из них <b>в нормальном</b> состоянии?")
 
 
 @router.message(Edit.normal)
@@ -641,6 +668,24 @@ async def edit_normal(message: Message, state: FSMContext):
         await message.answer(f"Не больше принятых ({data['new_total']}).")
         return
     await state.update_data(new_normal=n)
+    await state.set_state(Edit.bad)
+    await message.answer("Сколько <b>неликвидных</b> (не подлежат восстановлению)?")
+
+
+@router.message(Edit.bad)
+async def edit_bad(message: Message, state: FSMContext):
+    n = parse_int(message.text)
+    data = await state.get_data()
+    if n is None:
+        await message.answer("Нужно число (можно 0).")
+        return
+    if data["new_normal"] + n > data["new_total"]:
+        await message.answer(
+            f"Нормальных ({data['new_normal']}) + неликвидных ({n}) "
+            f"больше, чем принято ({data['new_total']})."
+        )
+        return
+    await state.update_data(new_bad=n)
     await state.set_state(Edit.work)
     await message.answer("Сколько <b>взято в работу</b>?")
 
@@ -665,9 +710,10 @@ async def edit_work(message: Message, state: FSMContext):
                 reply_markup=main_menu(message.from_user.id),
             )
             return
-        was = (r.qty_total, r.qty_normal, r.qty_work)
+        was = (r.qty_total, r.qty_normal, r.qty_bad or 0, r.qty_work)
         r.qty_total = data["new_total"]
         r.qty_normal = data["new_normal"]
+        r.qty_bad = data.get("new_bad", 0)
         r.qty_work = n
         r.edited_at = dt.datetime.now(dt.timezone.utc)
         r.changed_by = message.from_user.full_name
@@ -676,8 +722,9 @@ async def edit_work(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer(
-        f"✅ Исправлено.\nБыло: {was[0]}/{was[1]}/{was[2]} → "
-        f"стало: {data['new_total']}/{data['new_normal']}/{n}\n\n{card}",
+        f"✅ Исправлено.\nБыло: {was[0]}/{was[1]}/{was[2]}/{was[3]} → "
+        f"стало: {data['new_total']}/{data['new_normal']}/"
+        f"{data.get('new_bad', 0)}/{n}\n\n{card}",
         reply_markup=main_menu(message.from_user.id),
     )
 
@@ -721,24 +768,25 @@ def _format_report(d: dt.date, rows: list[Receipt]) -> str:
     # by_point[точка][кассир][(валюта, номинал)] = агрегаты
     tree: dict[str, dict[str, dict[tuple, dict]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(
-            lambda: {"total": 0, "normal": 0, "work": 0, "edited": False}
+            lambda: {"total": 0, "normal": 0, "bad": 0, "work": 0, "edited": False}
         ))
     )
     for r in rows:
         cell = tree[r.point_name][r.cashier_name or NO_CASHIER][(r.currency, r.denomination)]
         cell["total"] += r.qty_total
         cell["normal"] += r.qty_normal
+        cell["bad"] += r.qty_bad or 0
         cell["work"] += r.qty_work
         if r.edited_at:
             cell["edited"] = True
 
     out = [f"📊 <b>Отчёт за {fmt_date(d)}</b>"]
-    g_t = g_n = g_w = 0                # суммы в $
-    gc_t = gc_n = gc_w = 0             # количество купюр
+    g_t = g_n = g_b = g_w = 0                # суммы в $
+    gc_t = gc_n = gc_b = gc_w = 0            # количество купюр
 
     for point in sorted(tree):
         out.append(f"\n🏢 <b>{html.escape(point)}</b>")
-        p_t = p_n = p_w = 0
+        p_t = p_n = p_b = p_w = 0
         for cashier in sorted(tree[point]):
             out.append(f"  👤 {html.escape(cashier)}")
             cells = tree[point][cashier]
@@ -746,24 +794,37 @@ def _format_report(d: dt.date, rows: list[Receipt]) -> str:
                 c = cells[(cur, denom)]
                 out.append(
                     f"     {cur} {denom} — принято {c['total']}, "
-                    f"годных {c['normal']}, в работу {c['work']}"
+                    f"нормальных {c['normal']}, неликвидных {c['bad']}, "
+                    f"в работу {c['work']}"
                     + (" ✏️" if c["edited"] else "")
                 )
                 p_t += c["total"] * denom
                 p_n += c["normal"] * denom
+                p_b += c["bad"] * denom
                 p_w += c["work"] * denom
                 gc_t += c["total"]
                 gc_n += c["normal"]
+                gc_b += c["bad"]
                 gc_w += c["work"]
-        out.append(f"  Σ ${p_t:,} принято · ${p_n:,} годных · ${p_w:,} в работу")
+        out.append(
+            f"  Σ ${p_t:,} принято · ${p_n:,} нормальных · "
+            f"${p_b:,} неликвидных · ${p_w:,} в работу"
+        )
         g_t += p_t
         g_n += p_n
+        g_b += p_b
         g_w += p_w
 
     out.append("\n━━━━━━━━━━━━━━")
     out.append("<b>ИТОГО за день</b>")
-    out.append(f"  Купюр: принято {gc_t}, годных {gc_n}, в работу {gc_w}")
-    out.append(f"  Сумма: ${g_t:,} принято · ${g_n:,} годных · ${g_w:,} в работу")
+    out.append(
+        f"  Купюр: принято {gc_t}, нормальных {gc_n}, "
+        f"неликвидных {gc_b}, в работу {gc_w}"
+    )
+    out.append(
+        f"  Сумма: ${g_t:,} принято · ${g_n:,} нормальных · "
+        f"${g_b:,} неликвидных · ${g_w:,} в работу"
+    )
     return "\n".join(out)
 
 
