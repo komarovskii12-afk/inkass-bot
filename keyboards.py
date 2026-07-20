@@ -1,10 +1,14 @@
 """Клавиатуры бота."""
+import datetime as dt
+
 from aiogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
     KeyboardButton, ReplyKeyboardMarkup,
 )
 
 from config import is_admin
+
+_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 BTN_RECV = "📥 Принять инкассацию"
 BTN_EDIT = "✏️ Исправить"
@@ -37,6 +41,35 @@ def date_kb(prefix: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Вчера", callback_data=f"{prefix}:yesterday")],
         [InlineKeyboardButton(text="Другая дата", callback_data=f"{prefix}:custom")],
     ])
+
+
+def week_kb(prefix: str, today: dt.date) -> InlineKeyboardMarkup:
+    """Последние 7 дней кнопками + ручной ввод даты.
+
+    В callback кладём саму дату (ISO), так что обработчику не нужно
+    пересчитывать «сегодня» — нет рассинхрона, если день сменился
+    между показом клавиатуры и нажатием.
+    """
+    def btn(d: dt.date, label: str) -> InlineKeyboardButton:
+        return InlineKeyboardButton(
+            text=label, callback_data=f"{prefix}:{d.isoformat()}"
+        )
+
+    def day_label(d: dt.date) -> str:
+        return f"{_WEEKDAYS[d.weekday()]} {d.strftime('%d.%m')}"
+
+    rows = [[
+        btn(today, f"Сегодня · {today.strftime('%d.%m')}"),
+        btn(today - dt.timedelta(days=1),
+            f"Вчера · {(today - dt.timedelta(days=1)).strftime('%d.%m')}"),
+    ]]
+    older = [today - dt.timedelta(days=i) for i in range(2, 7)]
+    for i in range(0, len(older), 2):
+        rows.append([btn(d, day_label(d)) for d in older[i:i + 2]])
+    rows.append([InlineKeyboardButton(
+        text="📅 Другая дата", callback_data=f"{prefix}:custom"
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def points_kb(points) -> InlineKeyboardMarkup:

@@ -18,7 +18,7 @@ from keyboards import (
     BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RECV, BTN_REPORT,
     cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb, currency_kb,
     date_kb, denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
-    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb,
+    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb, week_kb,
 )
 
 router = Router()
@@ -428,19 +428,20 @@ async def report_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(Rep.date)
     await message.answer("За какой день отчёт?", reply_markup=cancel_menu())
-    await message.answer("Выберите дату:", reply_markup=date_kb("pdt"))
+    await message.answer("Выберите дату:", reply_markup=week_kb("pdt", today()))
 
 
 @router.callback_query(Rep.date, F.data.startswith("pdt:"))
 async def report_date_cb(cb: CallbackQuery, state: FSMContext):
     choice = cb.data.split(":", 1)[1]
-    if choice == "today":
-        d = today()
-    elif choice == "yesterday":
-        d = today() - dt.timedelta(days=1)
-    else:
+    if choice == "custom":
         await cb.message.answer("Введите дату в формате ДД.ММ.ГГГГ:")
         await cb.answer()
+        return
+    try:
+        d = dt.date.fromisoformat(choice)
+    except ValueError:
+        await cb.answer("Не понял дату", show_alert=True)
         return
     await cb.answer()
     await _send_report(cb.message, state, d, cb.from_user.id)
@@ -647,8 +648,7 @@ async def edit_delete_confirmed(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer("Удалено")
     await cb.message.answer(
-        f"🗑 Строка удалена из отчётов:\n{html.escape(label)}\n\n"
-        "<i>Запись сохранена в базе со следом об удалении.</i>",
+        f"🗑 Строка удалена:\n{html.escape(label)}",
         reply_markup=main_menu(cb.from_user.id),
     )
 
