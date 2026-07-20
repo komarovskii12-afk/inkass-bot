@@ -39,6 +39,15 @@ def points_kb(points) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def cashiers_kb(cashiers) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"👤 {c.name}", callback_data=f"csh:{c.id}")]
+        for c in cashiers
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Другая касса", callback_data="csh:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def currency_kb(currencies) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=c, callback_data=f"cur:{c}")] for c in currencies]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -52,14 +61,17 @@ def denom_kb(denoms) -> InlineKeyboardMarkup:
 def more_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Ещё номинал", callback_data="more:add")],
+        [InlineKeyboardButton(text="👤 Другой кассир", callback_data="more:cashier")],
         [InlineKeyboardButton(text="✅ Завершить приёмку", callback_data="more:done")],
     ])
 
 
+# ---------- Админ: пункты и кассиры ----------
 def points_admin_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить пункт", callback_data="padd")],
-        [InlineKeyboardButton(text="📋 Список / вкл-выкл", callback_data="plist")],
+        [InlineKeyboardButton(text="➕ Добавить кассу", callback_data="padd")],
+        [InlineKeyboardButton(text="📋 Кассы: вкл/выкл", callback_data="plist")],
+        [InlineKeyboardButton(text="👤 Кассиры", callback_data="clist")],
     ])
 
 
@@ -70,4 +82,26 @@ def points_toggle_kb(points) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{mark} {p.name}", callback_data=f"ptog:{p.id}"
         )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def points_pick_kb(points, prefix: str) -> InlineKeyboardMarkup:
+    """Выбор кассы для управления её кассирами."""
+    rows = [
+        [InlineKeyboardButton(text=p.name, callback_data=f"{prefix}:{p.id}")]
+        for p in points
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cashiers_admin_kb(cashiers, point_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    for c in cashiers:
+        mark = "🟢" if c.active else "🔴"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {c.name}", callback_data=f"ctog:{c.id}"
+        )])
+    rows.append([InlineKeyboardButton(
+        text="➕ Добавить кассира", callback_data=f"cadd:{point_id}"
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)

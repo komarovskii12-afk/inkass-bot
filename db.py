@@ -1,15 +1,15 @@
-"""Модели данных и подключение к БД (PostgreSQL на Render, SQLite локально)."""
+"""Модели данных и подключение к БД (внешний PostgreSQL / SQLite локально)."""
 import datetime as dt
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import (
-    BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, func, select,
+    BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, func, select, text,
 )
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from config import DATABASE_URL, DEFAULT_POINTS
-
+from seed_data import POINTS as SEED_POINTS
 
 # Параметры строки подключения в стиле libpq, которые asyncpg не понимает
 # и на которых падает (Neon отдаёт их в своей строке по умолчанию).
@@ -61,7 +61,7 @@ class Base(DeclarativeBase):
 
 
 class Point(Base):
-    """Обменный пункт."""
+    """Обменный пункт = касса. В названии есть номер, т.к. адреса повторяются."""
     __tablename__ = "points"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -69,8 +69,18 @@ class Point(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class Cashier(Base):
+    """Кассир, закреплённый за конкретной кассой."""
+    __tablename__ = "cashiers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    point_id: Mapped[int] = mapped_column(ForeignKey("points.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class Receipt(Base):
-    """Одна строка приёмки = один номинал одной валюты с одного пункта.
+    """Одна строка приёмки = один номинал одной валюты от одного кассира.
 
     qty_total  — принято всего купюр (изношенных свезли на приём)
     qty_normal — из них оказались в нормальном (годном) состоянии
@@ -87,7 +97,9 @@ class Receipt(Base):
     worker_id: Mapped[int] = mapped_column(BigInteger)
     worker_name: Mapped[str] = mapped_column(String(120))
     point_id: Mapped[int] = mapped_column(ForeignKey("points.id"))
-    point_name: Mapped[str] = mapped_column(String(120))               # денормализовано — отчёт не сломается при удалении пункта
+    point_name: Mapped[str] = mapped_column(String(120))               # денормализовано — отчёт не сломается при удалении точки
+    cashier_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cashier_name: Mapped[str] = mapped_column(String(120), default="—")
     currency: Mapped[str] = mapped_column(String(10))
     denomination: Mapped[int] = mapped_column(Integer)
     qty_total: Mapped[int] = mapped_column(Integer)
@@ -95,18 +107,73 @@ class Receipt(Base):
     qty_work: Mapped[int] = mapped_column(Integer)
 
 
+# Колонки, добавленные после первого релиза. create_all() умеет создавать
+# новые таблицы, но не дописывает колонки в уже существующие — делаем сами.
+_ADDED_COLUMNS = {
+    "receipts": [
+        ("cashier_id", "INTEGER"),
+        ("cashier_name", "VARCHAR(120)"),
+    ],
+}
+
+
+async def _migrate(conn) -> None:
+    dialect = conn.dialect.name
+    for table, columns in _ADDED_COLUMNS.items():
+        for column, coltype in columns:
+            if dialect == "postgresql":
+                await conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}"
+                ))
+            elif dialect == "sqlite":
+                rows = await conn.execute(text(f"PRAGMA table_info({table})"))
+                existing = {r[1] for r in rows.fetchall()}
+                if column not in existing:
+                    await conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"
+                    ))
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate(conn)
 
 
 async def seed_points(session) -> None:
-    """При первом запуске заполнить список пунктов из DEFAULT_POINTS."""
-    if not DEFAULT_POINTS:
-        return
-    existing = (await session.execute(select(func.count(Point.id)))).scalar_one()
-    if existing:
-        return
+    """Добавить недостающие кассы и кассиров из seed_data.
+
+    Идемпотентно: существующие записи не трогаются, скрытые точки не возвращаются.
+    """
+    existing_points = {
+        p.name: p for p in (await session.execute(select(Point))).scalars().all()
+    }
+    changed = False
+
+    for item in SEED_POINTS:
+        point = existing_points.get(item["name"])
+        if point is None:
+            point = Point(name=item["name"], active=True)
+            session.add(point)
+            await session.flush()          # нужен id для кассиров
+            existing_points[point.name] = point
+            changed = True
+
+        known = {
+            c.name for c in (await session.execute(
+                select(Cashier).where(Cashier.point_id == point.id)
+            )).scalars().all()
+        }
+        for cashier_name in item.get("cashiers", []):
+            if cashier_name not in known:
+                session.add(Cashier(point_id=point.id, name=cashier_name, active=True))
+                changed = True
+
+    # Совместимость: точки из переменной DEFAULT_POINTS (без кассиров)
     for name in DEFAULT_POINTS:
-        session.add(Point(name=name, active=True))
-    await session.commit()
+        if name not in existing_points:
+            session.add(Point(name=name, active=True))
+            changed = True
+
+    if changed:
+        await session.commit()
