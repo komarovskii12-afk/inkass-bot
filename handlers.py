@@ -17,7 +17,7 @@ from db import Cashier, Point, Receipt, Session
 from keyboards import (
     BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RECV, BTN_REPORT,
     cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb, currency_kb,
-    date_kb, denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
+    denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
     points_admin_kb, points_kb, points_pick_kb, points_toggle_kb, report_again_kb,
     week_kb,
 )
@@ -51,7 +51,6 @@ router.callback_query.middleware(AccessMiddleware())
 
 # ---------- Состояния ----------
 class Recv(StatesGroup):
-    date = State()
     point = State()
     cashier = State()
     currency = State()
@@ -151,39 +150,14 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await message.answer("Отменено.", reply_markup=main_menu(message.from_user.id))
 
 
-# ---------- Приёмка: дата ----------
+# ---------- Приёмка: всегда за сегодня ----------
 @router.message(F.text == BTN_RECV)
 async def recv_start(message: Message, state: FSMContext):
     await state.clear()
-    await state.update_data(lines=[])
-    await state.set_state(Recv.date)
-    await message.answer("За какую дату приёмка?", reply_markup=cancel_menu())
-    await message.answer("Выберите дату:", reply_markup=date_kb("rdt"))
-
-
-@router.callback_query(Recv.date, F.data.startswith("rdt:"))
-async def recv_date(cb: CallbackQuery, state: FSMContext):
-    choice = cb.data.split(":", 1)[1]
-    if choice == "today":
-        d = today()
-    elif choice == "yesterday":
-        d = today() - dt.timedelta(days=1)
-    else:
-        await cb.message.answer("Введите дату в формате ДД.ММ.ГГГГ:")
-        await cb.answer()
-        return
-    await state.update_data(report_date=d.isoformat())
-    await cb.answer()
-    await _ask_point(cb.message, state, cb.from_user.id)
-
-
-@router.message(Recv.date)
-async def recv_date_text(message: Message, state: FSMContext):
-    d = parse_date(message.text)
-    if not d:
-        await message.answer("Не понял дату. Пример: 20.07.2026")
-        return
-    await state.update_data(report_date=d.isoformat())
+    await state.update_data(lines=[], report_date=today().isoformat())
+    await message.answer(
+        f"📥 Приёмка за {fmt_date(today())}", reply_markup=cancel_menu()
+    )
     await _ask_point(message, state, message.from_user.id)
 
 
