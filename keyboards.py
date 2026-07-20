@@ -72,6 +72,13 @@ def week_kb(prefix: str, today: dt.date) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def report_again_kb() -> InlineKeyboardMarkup:
+    """Кнопка под готовым отчётом: вернуться к выбору даты."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Выбрать другую дату", callback_data="pdt_again")],
+    ])
+
+
 def points_kb(points) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=p.name, callback_data=f"pt:{p.id}")] for p in points]
     return InlineKeyboardMarkup(inline_keyboard=rows)

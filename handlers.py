@@ -18,7 +18,8 @@ from keyboards import (
     BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RECV, BTN_REPORT,
     cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb, currency_kb,
     date_kb, denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
-    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb, week_kb,
+    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb, report_again_kb,
+    week_kb,
 )
 
 router = Router()
@@ -427,8 +428,17 @@ def _receipt_summary(point_name: str, d: dt.date, lines: list[dict]) -> str:
 async def report_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(Rep.date)
-    await message.answer("За какой день отчёт?", reply_markup=cancel_menu())
-    await message.answer("Выберите дату:", reply_markup=week_kb("pdt", today()))
+    # Главное меню не прячем: выбор даты — инлайн-кнопки, «Отмена» не нужна.
+    await message.answer("За какой день отчёт?", reply_markup=week_kb("pdt", today()))
+
+
+@router.callback_query(F.data == "pdt_again")
+async def report_again(cb: CallbackQuery, state: FSMContext):
+    """Кнопка под отчётом: снова показать выбор даты."""
+    await state.clear()
+    await state.set_state(Rep.date)
+    await cb.answer()
+    await cb.message.answer("Выберите дату:", reply_markup=week_kb("pdt", today()))
 
 
 @router.callback_query(Rep.date, F.data.startswith("pdt:"))
@@ -449,6 +459,16 @@ async def report_date_cb(cb: CallbackQuery, state: FSMContext):
 
 @router.message(Rep.date)
 async def report_date_text(message: Message, state: FSMContext):
+    # Главное меню видно во время выбора даты — нажатия его кнопок
+    # не должны попадать в разбор даты.
+    if message.text == BTN_EDIT:
+        await state.clear()
+        await edit_start(message, state)
+        return
+    if message.text == BTN_POINTS:
+        await state.clear()
+        await points_menu(message, state)
+        return
     d = parse_date(message.text)
     if not d:
         await message.answer("Не понял дату. Пример: 20.07.2026")
@@ -467,9 +487,11 @@ async def _send_report(message: Message, state: FSMContext, d: dt.date, uid: int
 
     await state.clear()
     if not rows:
-        await message.answer(f"За {fmt_date(d)} записей нет.", reply_markup=main_menu(uid))
+        await message.answer(
+            f"За {fmt_date(d)} записей нет.", reply_markup=report_again_kb()
+        )
         return
-    await message.answer(_format_report(d, rows), reply_markup=main_menu(uid))
+    await message.answer(_format_report(d, rows), reply_markup=report_again_kb())
 
 
 # ---------- Исправление записей (только за сегодняшнюю дату) ----------
