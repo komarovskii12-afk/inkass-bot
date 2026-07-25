@@ -9,7 +9,10 @@ from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import (
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
+    Message, TelegramObject,
+)
 from sqlalchemy import select
 
 from config import CURRENCIES, TZ, is_admin, is_allowed
@@ -68,6 +71,10 @@ class Rep(StatesGroup):
 
 class Rate(StatesGroup):
     period = State()
+
+
+class Clean(StatesGroup):
+    confirm = State()
 
 
 class Pts(StatesGroup):
@@ -1100,6 +1107,96 @@ def _format_rating(d1: dt.date, d2: dt.date, rows: list[Receipt]) -> str:
         f"(<b>{g_pct:.1f}%</b>) · ${g_bad_amt:,}"
     )
     return "\n".join(out)
+
+
+# ---------- Очистка тестовых данных (только владелец) ----------
+@router.message(Command("cleanup"))
+async def cleanup_start(message: Message, state: FSMContext):
+    """/cleanup ДД.ММ.ГГГГ — удалить все приёмки, КРОМЕ указанной даты.
+
+    Двухшаговая: сначала показываем, что именно удалится, и только после
+    подтверждения кнопкой стираем. Кассы и кассиры не трогаются.
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("Только для владельца.")
+        return
+    await state.clear()
+
+    parts = (message.text or "").split(maxsplit=1)
+    keep = parse_date(parts[1]) if len(parts) > 1 else None
+    if keep is None:
+        await message.answer(
+            "Укажите дату, которую <b>оставить</b>:\n"
+            "<code>/cleanup 24.07.2026</code>\n\n"
+            "Все остальные приёмки будут удалены. Кассы и кассиры останутся.",
+            reply_markup=main_menu(message.from_user.id),
+        )
+        return
+
+    async with Session() as s:
+        rows = (await s.execute(select(Receipt))).scalars().all()
+
+    doomed = [r for r in rows if r.report_date != keep]
+    kept = [r for r in rows if r.report_date == keep]
+    if not doomed:
+        await message.answer(
+            f"Удалять нечего: все {len(rows)} записей — за {fmt_date(keep)}.",
+            reply_markup=main_menu(message.from_user.id),
+        )
+        return
+
+    by_date: dict[dt.date, int] = defaultdict(int)
+    for r in doomed:
+        by_date[r.report_date] += 1
+    lines = [
+        f"  • {fmt_date(d)} — {by_date[d]} строк" for d in sorted(by_date)
+    ]
+
+    await state.update_data(keep=keep.isoformat(), doomed=len(doomed))
+    await state.set_state(Clean.confirm)
+    await message.answer(
+        "⚠️ <b>Будет удалено безвозвратно</b>\n\n"
+        + "\n".join(lines)
+        + f"\n\nВсего: <b>{len(doomed)}</b> строк\n"
+        f"Останется: <b>{len(kept)}</b> строк за {fmt_date(keep)}\n\n"
+        "Кассы и кассиры не тронуты. Подтвердить?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🗑 Да, удалить {len(doomed)}", callback_data="cln:yes"
+            )],
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cln:no")],
+        ]),
+    )
+
+
+@router.callback_query(Clean.confirm, F.data == "cln:no")
+async def cleanup_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer("Отменено")
+    await cb.message.answer("Отменено, ничего не удалено.",
+                            reply_markup=main_menu(cb.from_user.id))
+
+
+@router.callback_query(Clean.confirm, F.data == "cln:yes")
+async def cleanup_confirmed(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Только для владельца", show_alert=True)
+        return
+    data = await state.get_data()
+    keep = dt.date.fromisoformat(data["keep"])
+    async with Session() as s:
+        res = await s.execute(
+            Receipt.__table__.delete().where(Receipt.report_date != keep)
+        )
+        await s.commit()
+        left = len((await s.execute(select(Receipt))).scalars().all())
+    await state.clear()
+    await cb.answer("Готово")
+    await cb.message.answer(
+        f"🗑 Удалено: <b>{res.rowcount}</b> строк.\n"
+        f"Осталось: <b>{left}</b> за {fmt_date(keep)}.",
+        reply_markup=main_menu(cb.from_user.id),
+    )
 
 
 # ---------- Фолбэк ----------
