@@ -12,6 +12,7 @@ _WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 BTN_RECV = "📥 Принять инкассацию"
 BTN_EDIT = "✏️ Исправить"
+BTN_SAFE = "📦 Сейф"
 BTN_REPORT = "📊 Отчёт"
 BTN_RATING = "📈 Неликвид"
 BTN_POINTS = "🏢 Пункты"
@@ -22,6 +23,7 @@ def main_menu(uid: int) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text=BTN_RECV)],
         [KeyboardButton(text=BTN_EDIT)],
+        [KeyboardButton(text=BTN_SAFE)],
         [KeyboardButton(text=BTN_REPORT)],
     ]
     if is_admin(uid):

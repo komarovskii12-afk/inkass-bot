@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from config import CURRENCIES, TZ, is_admin, is_allowed
 from db import Cashier, Point, Receipt, Session
+from safe import log_intake
 from keyboards import (
     BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RATING, BTN_RECV, BTN_REPORT,
     _short_point, cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb,
@@ -408,6 +409,11 @@ async def recv_more_done(cb: CallbackQuery, state: FSMContext):
 
     report_date = dt.date.fromisoformat(data["report_date"])
     session_id = uuid.uuid4().hex
+    # Суммы для операции сейфа: приёмка — это обмен 1:1 с кассой.
+    amt_total = sum(ln["total"] * ln["denom"] for ln in lines)
+    amt_normal = sum(ln["normal"] * ln["denom"] for ln in lines)
+    amt_work = sum(ln["work"] * ln["denom"] for ln in lines)
+    amt_bad = sum(ln.get("bad", 0) * ln["denom"] for ln in lines)
     async with Session() as s:
         for ln in lines:
             s.add(Receipt(
@@ -426,6 +432,10 @@ async def recv_more_done(cb: CallbackQuery, state: FSMContext):
                 qty_bad=ln.get("bad", 0),
                 qty_work=ln["work"],
             ))
+        await log_intake(
+            s, cb.from_user, amt_total, amt_normal, amt_work, amt_bad,
+            data["point_name"],
+        )
         await s.commit()
 
     summary = _receipt_summary(data["point_name"], report_date, lines)

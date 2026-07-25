@@ -14,6 +14,7 @@ from config import (
 )
 from db import Session, init_db, seed_points
 from handlers import router
+from safe import router as safe_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -37,6 +38,8 @@ async def health(_request: web.Request) -> web.Response:
 
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
+    # Сейф раньше основного: у handlers есть фолбэк, который иначе перехватит.
+    dp.include_router(safe_router)
     dp.include_router(router)
     dp.startup.register(on_startup)
     return dp

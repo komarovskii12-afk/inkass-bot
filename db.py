@@ -134,6 +134,33 @@ class Receipt(Base):
     changed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 
+class SafeOp(Base):
+    """Движение денег внутри сейфа.
+
+    Сейф — оборотный фонд фиксированного размера, разложенный по трём корзинам:
+    нормальные (готовы к выдаче) / в работе (восстанавливаются) / неликвид
+    (ждут сдачи в банк). Каждая операция только перекладывает суммы между
+    корзинами, поэтому общий фонд меняется лишь при явном пополнении.
+
+    Суммы в долларах, знаковые: -300 значит «из корзины ушло $300».
+    """
+    __tablename__ = "safe_ops"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    op_date: Mapped[dt.date] = mapped_column(Date, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    user_name: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(20))      # intake / fund / restored / failed / bank
+    d_normal: Mapped[int] = mapped_column(Integer, default=0)
+    d_work: Mapped[int] = mapped_column(Integer, default=0)
+    d_bad: Mapped[int] = mapped_column(Integer, default=0)
+    fee: Mapped[int] = mapped_column(Integer, default=0)  # комиссия банка
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
 # Колонки, добавленные после первого релиза. create_all() умеет создавать
 # новые таблицы, но не дописывает колонки в уже существующие — делаем сами.
 _ADDED_COLUMNS = {
