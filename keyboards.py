@@ -13,6 +13,7 @@ _WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 BTN_RECV = "📥 Принять инкассацию"
 BTN_EDIT = "✏️ Исправить"
 BTN_REPORT = "📊 Отчёт"
+BTN_RATING = "📈 Неликвид"
 BTN_POINTS = "🏢 Пункты"
 BTN_CANCEL = "❌ Отмена"
 
@@ -24,6 +25,7 @@ def main_menu(uid: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_REPORT)],
     ]
     if is_admin(uid):
+        rows.append([KeyboardButton(text=BTN_RATING)])
         rows.append([KeyboardButton(text=BTN_POINTS)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -70,6 +72,15 @@ def week_kb(prefix: str, today: dt.date) -> InlineKeyboardMarkup:
         text="📅 Другая дата", callback_data=f"{prefix}:custom"
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def rating_period_kb() -> InlineKeyboardMarkup:
+    """Период для отчёта по неликвиду."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="7 дней", callback_data="rt:7"),
+         InlineKeyboardButton(text="30 дней", callback_data="rt:30")],
+        [InlineKeyboardButton(text="📅 Другой период", callback_data="rt:custom")],
+    ])
 
 
 def report_again_kb() -> InlineKeyboardMarkup:

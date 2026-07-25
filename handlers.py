@@ -15,11 +15,11 @@ from sqlalchemy import select
 from config import CURRENCIES, TZ, is_admin, is_allowed
 from db import Cashier, Point, Receipt, Session
 from keyboards import (
-    BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RECV, BTN_REPORT,
-    cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb, currency_kb,
-    denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
-    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb, report_again_kb,
-    week_kb,
+    BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RATING, BTN_RECV, BTN_REPORT,
+    _short_point, cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb,
+    currency_kb, denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
+    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb,
+    rating_period_kb, report_again_kb, week_kb,
 )
 
 router = Router()
@@ -64,6 +64,10 @@ class Recv(StatesGroup):
 
 class Rep(StatesGroup):
     date = State()
+
+
+class Rate(StatesGroup):
+    period = State()
 
 
 class Pts(StatesGroup):
@@ -495,6 +499,10 @@ async def report_date_text(message: Message, state: FSMContext):
     if message.text == BTN_POINTS:
         await state.clear()
         await points_menu(message, state)
+        return
+    if message.text == BTN_RATING:
+        await state.clear()
+        await rating_start(message, state)
         return
     d = parse_date(message.text)
     if not d:
@@ -971,6 +979,127 @@ async def cashier_add_save(message: Message, state: FSMContext):
         f"Добавлен кассир: {html.escape(name)} 🟢",
         reply_markup=main_menu(message.from_user.id),
     )
+
+
+# ---------- Неликвид по кассирам (только владелец) ----------
+@router.message(F.text == BTN_RATING)
+async def rating_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("Только для владельца.")
+        return
+    await state.clear()
+    await state.set_state(Rate.period)
+    await message.answer(
+        "📈 Неликвид по кассирам.\nЗа какой период?",
+        reply_markup=rating_period_kb(),
+    )
+
+
+@router.callback_query(Rate.period, F.data.startswith("rt:"))
+async def rating_period_cb(cb: CallbackQuery, state: FSMContext):
+    choice = cb.data.split(":", 1)[1]
+    if choice == "custom":
+        await cb.message.answer(
+            "Введите период в формате:\n<code>01.07.2026 - 21.07.2026</code>"
+        )
+        await cb.answer()
+        return
+    days = int(choice)
+    d2 = today()
+    d1 = d2 - dt.timedelta(days=days - 1)
+    await cb.answer()
+    await _send_rating(cb.message, state, d1, d2, cb.from_user.id)
+
+
+@router.message(Rate.period)
+async def rating_period_text(message: Message, state: FSMContext):
+    parts = [p for p in (message.text or "").replace("–", "-").split("-") if p.strip()]
+    d1 = parse_date(parts[0]) if len(parts) == 2 else None
+    d2 = parse_date(parts[1]) if len(parts) == 2 else None
+    if not d1 or not d2:
+        await message.answer(
+            "Не понял период. Пример: <code>01.07.2026 - 21.07.2026</code>"
+        )
+        return
+    if d1 > d2:
+        d1, d2 = d2, d1
+    await _send_rating(message, state, d1, d2, message.from_user.id)
+
+
+async def _send_rating(message: Message, state: FSMContext,
+                       d1: dt.date, d2: dt.date, uid: int):
+    async with Session() as s:
+        res = await s.execute(
+            select(Receipt).where(
+                Receipt.report_date >= d1,
+                Receipt.report_date <= d2,
+                Receipt.deleted_at.is_(None),
+            )
+        )
+        rows = res.scalars().all()
+    await state.clear()
+    if not rows:
+        await message.answer(
+            f"За период {fmt_date(d1)}–{fmt_date(d2)} записей нет.",
+            reply_markup=main_menu(uid),
+        )
+        return
+    await message.answer(_format_rating(d1, d2, rows), reply_markup=main_menu(uid))
+
+
+def _format_rating(d1: dt.date, d2: dt.date, rows: list[Receipt]) -> str:
+    """Антирейтинг кассиров: доля неликвида в сданной инкассации.
+
+    Неликвидные купюры не должны попадать в кассу вовсе, поэтому высокий
+    процент — сигнал о халатном приёме купюр у клиентов.
+    """
+    agg: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r.cashier_name or NO_CASHIER, r.point_name)
+        cell = agg.setdefault(key, {"total": 0, "bad": 0, "bad_amt": 0})
+        cell["total"] += r.qty_total
+        cell["bad"] += r.qty_bad or 0
+        cell["bad_amt"] += (r.qty_bad or 0) * r.denomination
+
+    ranked = sorted(
+        agg.items(),
+        key=lambda kv: (
+            -(kv[1]["bad"] / kv[1]["total"] if kv[1]["total"] else 0),
+            -kv[1]["bad"],
+        ),
+    )
+
+    out = [f"📈 <b>Неликвид по кассирам</b>\n{fmt_date(d1)} – {fmt_date(d2)}\n"]
+    clean: list[str] = []
+    i = 0
+    g_total = g_bad = g_bad_amt = 0
+    for (cashier, point), c in ranked:
+        g_total += c["total"]
+        g_bad += c["bad"]
+        g_bad_amt += c["bad_amt"]
+        label = f"{html.escape(cashier)} · {html.escape(_short_point(point))}"
+        if c["bad"] == 0:
+            clean.append(f"{label} (0 из {c['total']})")
+            continue
+        i += 1
+        pct = c["bad"] / c["total"] * 100
+        mark = "🔴" if pct >= 10 else ("🟡" if pct >= 5 else "⚪️")
+        out.append(
+            f"{i}. {mark} {label} — <b>{pct:.1f}%</b>\n"
+            f"    неликвид {c['bad']} из {c['total']} шт · ${c['bad_amt']:,}"
+        )
+
+    if i == 0:
+        out.append("За период неликвида нет 🎉")
+    if clean:
+        out.append("\n✅ Без неликвида: " + ", ".join(clean))
+
+    g_pct = g_bad / g_total * 100 if g_total else 0
+    out.append(
+        f"\n━━━━━━━━━━━━━━\nИТОГО: неликвид {g_bad} из {g_total} шт "
+        f"(<b>{g_pct:.1f}%</b>) · ${g_bad_amt:,}"
+    )
+    return "\n".join(out)
 
 
 # ---------- Фолбэк ----------
