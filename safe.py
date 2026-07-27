@@ -50,6 +50,7 @@ router.callback_query.middleware(AccessMiddleware())
 
 class SafeOps(StatesGroup):
     fund = State()
+    setfund = State()
     restored = State()
     failed = State()
     bank_amount = State()
@@ -109,9 +110,11 @@ def safe_kb(uid: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📜 История", callback_data="sf:log")],
     ]
     if is_admin(uid):
-        rows.insert(0, [InlineKeyboardButton(
-            text="➕ Пополнить фонд", callback_data="sf:fund"
-        )])
+        # Фонд — зона владельца: работник его не видит и не меняет.
+        rows.insert(0, [
+            InlineKeyboardButton(text="➕ Пополнить фонд", callback_data="sf:fund"),
+            InlineKeyboardButton(text="✏️ Изменить фонд", callback_data="sf:setfund"),
+        ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -168,6 +171,64 @@ async def fund_save(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"➕ Фонд пополнен на ${amt:,}\n\n{_card(b)}",
+        reply_markup=safe_kb(message.from_user.id),
+    )
+
+
+# ---------- Изменение размера фонда (только владелец) ----------
+@router.callback_query(F.data == "sf:setfund")
+async def setfund_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Только для владельца", show_alert=True)
+        return
+    async with Session() as s:
+        b = await balance(s)
+    await state.set_state(SafeOps.setfund)
+    await cb.answer()
+    await cb.message.answer(
+        f"Сейчас фонд ${b['fund']:,}.\n"
+        "Введите, каким он должен стать — разницу спишу или добавлю к нормальным."
+    )
+
+
+@router.message(SafeOps.setfund)
+async def setfund_save(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    text = (message.text or "").strip().replace(" ", "").replace("$", "")
+    new_fund = 0 if text == "0" else (parse_money(message.text) or -1)
+    if new_fund < 0:
+        await message.answer("Нужна сумма числом. Например: 6000")
+        return
+
+    async with Session() as s:
+        b = await balance(s)
+        delta = new_fund - b["fund"]
+        if delta == 0:
+            await state.clear()
+            await message.answer(
+                f"Фонд и так ${new_fund:,} — ничего не меняю.",
+                reply_markup=safe_kb(message.from_user.id),
+            )
+            return
+        if b["normal"] + delta < 0:
+            await message.answer(
+                f"Так нельзя: свободных нормальных всего ${b['normal']:,}, "
+                f"из них не вычесть ${-delta:,}.\n"
+                f"Минимально возможный фонд сейчас — "
+                f"${b['fund'] - b['normal']:,} (в работе + неликвид)."
+            )
+            return
+        await add_op(s, message.from_user, "fund", d_normal=delta,
+                     note=f"фонд {b['fund']:,} → {new_fund:,}")
+        await s.commit()
+        b = await balance(s)
+
+    await state.clear()
+    sign = "увеличен" if delta > 0 else "уменьшен"
+    await message.answer(
+        f"✏️ Фонд {sign} на ${abs(delta):,}.\n\n{_card(b)}",
         reply_markup=safe_kb(message.from_user.id),
     )
 
