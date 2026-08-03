@@ -73,7 +73,20 @@ def week_kb(prefix: str, today: dt.date) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(
         text="📅 Другая дата", callback_data=f"{prefix}:custom"
     )])
+    rows.append([InlineKeyboardButton(
+        text="📆 За период", callback_data=f"{prefix}:period"
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def period_kb() -> InlineKeyboardMarkup:
+    """Выбор периода для сводного отчёта."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="7 дней", callback_data="pp:7"),
+         InlineKeyboardButton(text="30 дней", callback_data="pp:30")],
+        [InlineKeyboardButton(text="Текущий месяц", callback_data="pp:month")],
+        [InlineKeyboardButton(text="📅 Свои даты", callback_data="pp:custom")],
+    ])
 
 
 def rating_period_kb() -> InlineKeyboardMarkup:

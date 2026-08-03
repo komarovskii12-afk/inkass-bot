@@ -22,7 +22,7 @@ from keyboards import (
     BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RATING, BTN_RECV, BTN_REPORT,
     _short_point, cancel_menu, cashiers_admin_kb, cashiers_kb, confirm_delete_kb,
     currency_kb, denom_kb, edit_actions_kb, edit_list_kb, main_menu, more_kb,
-    points_admin_kb, points_kb, points_pick_kb, points_toggle_kb,
+    period_kb, points_admin_kb, points_kb, points_pick_kb, points_toggle_kb,
     rating_period_kb, report_again_kb, week_kb,
 )
 
@@ -68,6 +68,7 @@ class Recv(StatesGroup):
 
 class Rep(StatesGroup):
     date = State()
+    period = State()
 
 
 class Rate(StatesGroup):
@@ -487,6 +488,99 @@ async def report_again(cb: CallbackQuery, state: FSMContext):
     await state.set_state(Rep.date)
     await cb.answer()
     await cb.message.answer("Выберите дату:", reply_markup=week_kb("pdt", today()))
+
+
+@router.callback_query(Rep.date, F.data == "pdt:period")
+async def report_period_ask(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(Rep.period)
+    await cb.answer()
+    await cb.message.answer("За какой период?", reply_markup=period_kb())
+
+
+@router.callback_query(Rep.period, F.data.startswith("pp:"))
+async def report_period_cb(cb: CallbackQuery, state: FSMContext):
+    choice = cb.data.split(":", 1)[1]
+    d2 = today()
+    if choice == "custom":
+        await cb.message.answer(
+            "Введите период:\n<code>01.07.2026 - 25.07.2026</code>"
+        )
+        await cb.answer()
+        return
+    if choice == "month":
+        d1 = d2.replace(day=1)
+    else:
+        d1 = d2 - dt.timedelta(days=int(choice) - 1)
+    await cb.answer()
+    await _send_period(cb.message, state, d1, d2, cb.from_user.id)
+
+
+@router.message(Rep.period)
+async def report_period_text(message: Message, state: FSMContext):
+    parts = [p for p in (message.text or "").replace("–", "-").split("-") if p.strip()]
+    d1 = parse_date(parts[0]) if len(parts) == 2 else None
+    d2 = parse_date(parts[1]) if len(parts) == 2 else None
+    if not d1 or not d2:
+        await message.answer("Не понял период. Пример: <code>01.07.2026 - 25.07.2026</code>")
+        return
+    if d1 > d2:
+        d1, d2 = d2, d1
+    await _send_period(message, state, d1, d2, message.from_user.id)
+
+
+async def _send_period(message: Message, state: FSMContext,
+                       d1: dt.date, d2: dt.date, uid: int):
+    async with Session() as s:
+        rows = (await s.execute(
+            select(Receipt).where(
+                Receipt.report_date >= d1,
+                Receipt.report_date <= d2,
+                Receipt.deleted_at.is_(None),
+            )
+        )).scalars().all()
+    await state.clear()
+    if not rows:
+        await message.answer(
+            f"За {fmt_date(d1)} – {fmt_date(d2)} записей нет.",
+            reply_markup=report_again_kb(),
+        )
+        return
+    await message.answer(_format_period(d1, d2, rows), reply_markup=report_again_kb())
+
+
+def _format_period(d1: dt.date, d2: dt.date, rows: list[Receipt]) -> str:
+    """Сводка за период — только итоги, без построчной разбивки."""
+    q_total = q_norm = q_bad = q_work = 0
+    a_total = a_norm = a_bad = a_work = 0
+    for r in rows:
+        bad = r.qty_bad or 0
+        q_total += r.qty_total
+        q_norm += r.qty_normal
+        q_bad += bad
+        q_work += r.qty_work
+        a_total += r.qty_total * r.denomination
+        a_norm += r.qty_normal * r.denomination
+        a_bad += bad * r.denomination
+        a_work += r.qty_work * r.denomination
+
+    days = len({r.report_date for r in rows})
+    points = len({r.point_name for r in rows})
+    bad_pct = q_bad / q_total * 100 if q_total else 0
+
+    return (
+        f"📊 <b>Отчёт за период</b>\n{fmt_date(d1)} – {fmt_date(d2)}\n"
+        f"<i>дней с приёмками: {days} · касс: {points}</i>\n\n"
+        f"<b>Купюр</b>\n"
+        f"  принято {q_total}, нормальных {q_norm}, "
+        f"неликвидных {q_bad}, в работу {q_work}\n\n"
+        f"<b>Сумма</b>\n"
+        f"  принято ${a_total:,}\n"
+        f"  нормальных ${a_norm:,}\n"
+        f"  неликвидных ${a_bad:,}\n"
+        f"  в работу ${a_work:,}\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"Доля неликвида: <b>{bad_pct:.1f}%</b>"
+    )
 
 
 @router.callback_query(Rep.date, F.data.startswith("pdt:"))
