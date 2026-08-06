@@ -167,6 +167,12 @@ async def work_show(message: Message, state: FSMContext):
         )
         return
 
+    # Списать из работы можно прямо отсюда — не заходя в «Сейф».
+    actions = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔧 Восстановлено", callback_data="sf:restored")],
+        [InlineKeyboardButton(text="🗑 Не восстановить", callback_data="sf:failed")],
+    ]) if b["work"] > 0 else None
+
     out = [f"🔧 <b>В работе сейчас: ${b['work']:,}</b>\n"]
     if rows:
         out.append("Последние движения:")
@@ -185,7 +191,9 @@ async def work_show(message: Message, state: FSMContext):
         f"\n📦 Остальное в сейфе: нормальные ${b['normal']:,} · "
         f"неликвид ${b['bad']:,}"
     )
-    await message.answer("\n".join(out))
+    if b["work"] > 0:
+        out.append("\n<i>Списать из работы — кнопками ниже.</i>")
+    await message.answer("\n".join(out), reply_markup=actions)
 
 
 # ---------- Пополнение фонда ----------
