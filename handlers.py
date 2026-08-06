@@ -1,6 +1,7 @@
 """Логика бота: приёмка инкассации, отчёт по дате, управление кассами и кассирами."""
 import datetime as dt
 import html
+import logging
 import uuid
 from collections import defaultdict
 from typing import Any, Awaitable, Callable
@@ -15,8 +16,9 @@ from aiogram.types import (
 )
 from sqlalchemy import select
 
-from config import CURRENCIES, TZ, is_admin, is_allowed
+from config import ADMIN_IDS, CURRENCIES, TZ, is_admin, is_allowed
 from db import Cashier, Point, Receipt, Session
+from safe import balance as safe_balance
 from safe import log_intake
 from keyboards import (
     BTN_CANCEL, BTN_EDIT, BTN_POINTS, BTN_RATING, BTN_RECV, BTN_REPORT,
@@ -443,6 +445,42 @@ async def recv_more_done(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer("Сохранено ✅")
     await cb.message.answer(summary, reply_markup=main_menu(cb.from_user.id))
+    await _notify_owners(cb, report_date, data["point_name"], lines,
+                         amt_total, amt_normal, amt_work, amt_bad)
+
+
+async def _notify_owners(cb: CallbackQuery, d: dt.date, point_name: str,
+                         lines: list[dict], total: int, normal: int,
+                         work: int, bad: int) -> None:
+    """Короткая сводка владельцу сразу после приёмки.
+
+    Себе уведомление не шлём: владелец и так видит результат на экране.
+    """
+    targets = [uid for uid in ADMIN_IDS if uid != cb.from_user.id]
+    if not targets:
+        return
+
+    cashiers = sorted({ln.get("cashier_name", NO_CASHIER) for ln in lines})
+    async with Session() as s:
+        b = await safe_balance(s)
+
+    text = (
+        f"🔔 <b>Приёмка · {fmt_date(d)}</b>\n"
+        f"🏢 {html.escape(point_name)}\n"
+        f"👤 {html.escape(', '.join(cashiers))}\n\n"
+        f"Принято: <b>${total:,}</b>\n"
+        f"  нормальных ${normal:,}\n"
+        f"  неликвид ${bad:,}\n"
+        f"  <b>в работу ${work:,}</b>\n\n"
+        f"📦 В сейфе сейчас: в работе <b>${b['work']:,}</b> · "
+        f"неликвид ${b['bad']:,}\n"
+        f"<i>Внёс: {html.escape(cb.from_user.full_name)}</i>"
+    )
+    for uid in targets:
+        try:
+            await cb.bot.send_message(uid, text)
+        except Exception as e:      # noqa: BLE001 — уведомление не должно ронять приёмку
+            logging.warning("Не смог уведомить %s: %s", uid, e)
 
 
 def _receipt_summary(point_name: str, d: dt.date, lines: list[dict]) -> str:
