@@ -26,6 +26,7 @@ from db import SafeOp, Session
 router = Router()
 
 BTN_SAFE = "📦 Сейф"
+BTN_WORK = "🔧 В работе"
 
 KIND_TITLE = {
     "intake": "📥 Приёмка",
@@ -143,6 +144,48 @@ async def safe_show(message: Message, state: FSMContext):
         hint = ("\n\n⚠️ <i>Нормальные ушли в минус: выдано на кассы больше, "
                 "чем было в сейфе. Проверьте пополнение фонда.</i>")
     await message.answer(_card(b) + hint, reply_markup=safe_kb(message.from_user.id))
+
+
+# ---------- Что сейчас в работе ----------
+@router.message(F.text == BTN_WORK)
+async def work_show(message: Message, state: FSMContext):
+    """Мгновенный срез: сколько в работе и откуда это пришло."""
+    await state.clear()
+    async with Session() as s:
+        b = await balance(s)
+        rows = (await s.execute(
+            select(SafeOp)
+            .where(SafeOp.d_work != 0)
+            .order_by(SafeOp.id.desc())
+            .limit(12)
+        )).scalars().all()
+
+    if b["work"] == 0 and not rows:
+        await message.answer(
+            "🔧 В работе сейчас пусто.\n"
+            "<i>Купюры попадают сюда при приёмке с кассы.</i>"
+        )
+        return
+
+    out = [f"🔧 <b>В работе сейчас: ${b['work']:,}</b>\n"]
+    if rows:
+        out.append("Последние движения:")
+        for r in rows:
+            src = f" · {html.escape(r.note)}" if r.note else ""
+            title = {
+                "intake": "приёмка",
+                "restored": "восстановлено",
+                "failed": "не восстановить",
+            }.get(r.kind, r.kind)
+            out.append(
+                f"  {r.op_date.strftime('%d.%m')}  "
+                f"<b>{r.d_work:+,}</b>  {title}{src}"
+            )
+    out.append(
+        f"\n📦 Остальное в сейфе: нормальные ${b['normal']:,} · "
+        f"неликвид ${b['bad']:,}"
+    )
+    await message.answer("\n".join(out))
 
 
 # ---------- Пополнение фонда ----------
